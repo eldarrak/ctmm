@@ -275,7 +275,9 @@ ctmm.iterate <- function(data,CTMM,verbose=FALSE,level=1,IC="AICc",MSPE="positio
         } # end MODELS loop
       } # end DROP loop
     } # end refined drop adjustments
-
+print(DROP)
+print(REFINE)
+    
     GUESS <- c(DROP,REFINE)
     # add to TRYS before potential feature collapse
     TRYS.OLD <- TRYS # don't count new attempts for next select
