@@ -288,7 +288,7 @@ ctmm.iterate <- function(data,CTMM,verbose=FALSE,level=1,IC="AICc",MSPE="positio
    if(length(GUESS)>1) # keep selecting (recursive)
     {
       # fit every model
-      if(trace && FALSE) { message("* Fitting models ",paste(names(GUESS),collapse=", "),".") }
+      if(trace) { message("* Fitting models ",paste(names(GUESS),collapse=", "),".") }
       # GUESS <- plapply(GUESS,function(g){M<-c(list(g),MODELS); attr(M,"attempted")<-TRYS.OLD; ctmm.select(data,M,verbose=TRUE,level=0,IC=IC,MSPE=MSPE,trace=trace,...)},cores=cores)
       GUESS <- plapply(GUESS,function(g){M<-c(list(g),MODELS); ctmm.iterate(data,M,verbose=TRUE,level=0,IC=IC,MSPE=MSPE,trace=trace,recurse=TRUE,TRYS=TRYS.OLD,...)},cores=cores)
       GUESS[sapply(GUESS,is.null)] <- NULL # delete collapsed repeats
