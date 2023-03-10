@@ -286,7 +286,8 @@ print(REFINE)
       TRYS <<- c(TRYS,names(GUESS))
       TRYS <<- unique(TRYS)
     }
-
+cat('GUESS')
+print(GUESS)
    if(length(GUESS)>1) # keep selecting (recursive)
     {
       # fit every model
