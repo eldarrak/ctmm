@@ -83,7 +83,7 @@ optimizer <- function(par,fn,...,method="pNewton",lower=-Inf,upper=Inf,period=FA
       #RESULT <- stats::optim(par=par,fn=func,method=method,lower=lower,upper=upper,control=control,...)
       cl <- makeCluster(8)     # set the number of processor cores
       setDefaultCluster(cl=cl)
-      RESULT <- stats::optimparallel(par=par,fn=func,method=method,lower=lower,upper=upper,control=control, ...)
+      RESULT <- optimParallel::optimParallel(par=par,fn=func,method=method,lower=lower,upper=upper,control=control, ...)
       stopCluster(cl) 
     }
   }
