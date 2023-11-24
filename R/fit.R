@@ -117,7 +117,7 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
     CTMM <- unit.ctmm(CTMM,length=1/SCALE,time=1/TSCALE)
 
     # translate back to origin from center
-    CTMM$mu <- drift@shift(CTMM$mu,SHIFT)
+    CTMM <- drift.shift(CTMM,SHIFT)
 
     # log-likelihood adjustment
     CTMM$loglike <- CTMM$loglike - length(axes)*n*log(SCALE)
@@ -138,7 +138,6 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
 
   # clean/validate
   CTMM <- ctmm.ctmm(CTMM)
-  drift <- get(CTMM$mean)
   CTMM$mu <- NULL # can always profile mu analytically
   range <- CTMM$range
 
@@ -146,7 +145,7 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
   COV.init <- CTMM$COV
   # make sure we can start from previous failed fit
   if(any(is.nan(COV.init) | COV.init==Inf)) { COV.init <- NULL }
-  if(!is.null(COV.init)) { TEST <- eigen(COV.init,only.values=TRUE)$values } else { TEST <- FALSE }
+  if(!is.null(COV.init)) { TEST <- eigen(COV.init)$values } else { TEST <- FALSE }
   if(any(TEST<=.Machine$double.eps | TEST==Inf)) { COV.init <- NULL }
   # erase previous fitting info if present
   CTMM$COV <- NULL
@@ -156,8 +155,17 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
   # evaluate mean function and error matrices for this data once upfront
   CTMM <- ctmm.prepare(data,CTMM,tau=FALSE,calibrate=FALSE) # don't muck with taus, don't calibrate
   TYPE <- DOP.match(axes)
-  UERE.DOF <- attr(data,"UERE")$DOF[,TYPE]
-  names(UERE.DOF) <- rownames(attr(data,"UERE")$DOF)
+  if(TYPE!="unknown")
+  {
+    UERE.DOF <- attr(data,"UERE")$DOF[,TYPE]
+    names(UERE.DOF) <- rownames(attr(data,"UERE")$DOF)
+  }
+  else
+  {
+    UERE.DOF <- 0
+    names(UERE.DOF) <- "all"
+  }
+
   UERE.FIT <- CTMM$error>0 & !is.na(UERE.DOF) & UERE.DOF<Inf # will we be fitting any error parameters?
   UERE.FIX <- CTMM$error>0 & (is.na(UERE.DOF) | UERE.DOF==Inf) # are there any fixed error parameters?
   UERE.PAR <- names(UERE.FIT)[UERE.FIT>0] # names of fitted UERE parameters
@@ -165,7 +173,7 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
   if(any(!UERE.FIT)) { CTMM$error[!UERE.FIT] <- as.logical(CTMM$error[!UERE.FIT]) }
 
   # don't try to fit error class parameters absent from data
-  if(any(CTMM$error>0) && "class" %in% names(data))
+  if(any(CTMM$error>0) && "class" %in% names(data) && TYPE!="unknown")
   {
     LEVELS <- levels(data$class)
     UERE.DOF <- UERE.DOF[LEVELS]
@@ -174,6 +182,7 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
     UERE.PAR <- UERE.PAR[UERE.PAR %in% LEVELS]
     CTMM$error <- CTMM$error[LEVELS]
   }
+
   # make sure to include calibration in log-likelihood even if error==FALSE
   CTMM$errors <- any(CTMM$error>0)
 
@@ -188,7 +197,7 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
   linear.cov <- FALSE # represent sigma linearly (for perturbation) versus * (for optimization)
   setup.parameters <- function(CTMM,profile=profile,linear=FALSE)
   {
-    STUFF <- id.parameters(CTMM,profile=profile,linear=linear,linear.cov=linear.cov,UERE.FIT=UERE.FIT,dt=dt,df=df,dz=dz,STRUCT=ORIGINAL)
+    STUFF <- id.parameters(CTMM,profile=profile,linear=linear,linear.cov=linear.cov,UERE.FIT=UERE.FIT,dt=dt,df=df,dz=dz,STRUCT=ORIGINAL,fit=TRUE)
     NAMES <<- STUFF$NAMES
     parscale <<- STUFF$parscale
     lower <<- STUFF$lower
@@ -531,22 +540,33 @@ ctmm.fit <- function(data,CTMM=ctmm(),method="pHREML",COV=TRUE,control=list(),tr
 #################
 ic.ctmm <- function(CTMM,n)
 {
-  NAMES <- CTMM$features
   axes <- CTMM$axes
   range <- CTMM$range
-  k.mean <- nrow(CTMM$mu)
+  k.mean <- length(CTMM$mu)
   method <- CTMM$method
 
-  nu <- length(NAMES)
   # all parameters
   q <- length(axes)
-  if(!range)
+  if(is.null(CTMM$formula)) # autocorrelation model
   {
-    k.mean <- k.mean - 1
-    n <- n - 1
+    NAMES <- CTMM$features
+    nu <- length(NAMES)
+
+    if(!range)
+    {
+      k.mean <- k.mean - q
+      n <- n - 1
+    }
+    if(!length(k.mean)) { k.mean <- 0 } # failed fit (bad data or bad parameters)
   }
-  if(!length(k.mean)) { k.mean <- 0 } # failed fit (bad data or bad parameters)
-  k <- nu + q*k.mean
+  else # RSF model
+  {
+    k.beta <- length(all.vars(CTMM$formula)) # linear terms
+    nu.beta <- length(CTMM$beta) - k.beta # quadratic terms (and more)
+    k.mean <- 2 + k.beta
+    nu <- 1 + nu.beta
+  }
+  k <- nu + k.mean
 
   CTMM$AIC <- 2*k - 2*CTMM$loglike
   CTMM$BIC <- log(n)*k - 2*CTMM$loglike
@@ -555,9 +575,9 @@ ic.ctmm <- function(CTMM,n)
   if(method=='ML')
   { CTMM$AICc <- -2*CTMM$loglike + q*n * 2*k/(q*n-k-nu) }
   else if(method=='pREML')
-  { CTMM$AICc <- -2*CTMM$loglike + (q*n)^2/(q*n+q*k.mean) * 2*k/(q*n-k-nu) }
+  { CTMM$AICc <- -2*CTMM$loglike + (q*n)^2/(q*n+k.mean) * 2*k/(q*n-k-nu) }
   else if(method %in% c('pHREML','HREML','REML'))
-  { CTMM$AICc <- -2*CTMM$loglike + (q*n-q*k.mean) * 2*k/(q*n-k-nu) }
+  { CTMM$AICc <- -2*CTMM$loglike + (q*n-k.mean) * 2*k/(q*n-k-nu) }
 
   # fix divergence
   if(q*n<=k+nu) { CTMM$AICc <- Inf }
@@ -610,8 +630,7 @@ ic.ctmm <- function(CTMM,n)
 
     return(MSPE)
   }
-  drift <- get(CTMM$mean)
-  STUFF <- drift@energy(CTMM)
+  STUFF <- drift.energy(CTMM)
   UU <- STUFF$UU
   VV <- STUFF$VV
   # Mean square prediction error in locations & velocities
@@ -639,10 +658,9 @@ ctmm.guess <- function(data,CTMM=ctmm(),variogram=NULL,name="GUESS",interactive=
   CTMM <- ctmm.prepare(data,CTMM,precompute=FALSE,tau=FALSE)
 
   # mean specific guesswork/preparation
-  drift <- get(CTMM$mean)
-  CTMM <- drift@init(data,CTMM)
+  CTMM <- drift.init(CTMM,data)
   mu <- CTMM$mu
-  u <- drift(data$t,CTMM)
+  u <- drift.mean(CTMM,data$t)
 
   # estimate circulation period if circle=TRUE
   if(CTMM$circle && class(CTMM$circle)[1]=="logical")
@@ -668,7 +686,7 @@ ctmm.guess <- function(data,CTMM=ctmm(),variogram=NULL,name="GUESS",interactive=
     CTMM$circle <- circle
   }
 
-  #
+  # other stuff...
 
   variogram.fit(variogram,CTMM=CTMM,name=name,interactive=interactive)
 }

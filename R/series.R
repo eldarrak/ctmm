@@ -1,11 +1,27 @@
 series <- function(x,coef)
 {
   n <- length(coef)
-  x <- c(1,x^(1:(n-1)))
-  x <- coef*x
-  x <- sum(x)
+  x <- sapply(0:(n-1),function(i){x^i}) # [x,pow]
+  x <- c( x %*% coef )
   return(x)
 }
+
+
+# cos(x)-1
+cosm1 <- Vectorize( function(x)
+{
+  x <- (x+pi)%%(2*pi) - pi # (-pi,+pi)
+
+  if(x>0.2)
+  { x <- cos(x)-1 }
+  else
+  {
+    coef <- c( 0, 0, -(1/2), 0, 1/24, 0, -(1/720), 0, 1/40320, 0, -(1/3628800) )
+    x <- series(x,coef)
+  }
+
+  return(x)
+})
 
 
 # log(1+x)/x --- to machine precision (including small x)
@@ -20,7 +36,7 @@ log1pxdx <- Vectorize( function(x)
     x <- 1/series(x,coef)
   }
   return(x)
-} )
+})
 
 
 # log(beta(a,b)) + a*log(b+a*x) --- to machine precision (including large b)
@@ -92,4 +108,27 @@ BesselK <- function(x,nu,expon.scaled=FALSE,log=FALSE)
 
   if(!log) { y <- exp(y) }
   return(y)
+}
+
+
+# bias of log(chi^2)
+log_chi2_bias <- function(n)
+{
+  b <- n
+  n1 <- 0.000003
+  n2 <- 40
+
+  SUB <- n==0
+  if(any(SUB)) { b[SUB] <- -Inf }
+
+  SUB <- n>0 & n<=n1
+  if(any(SUB)) { b[SUB] <-  -2/n[SUB] - log(n[SUB]/2) - EulerGamma + pi^2/12*n[SUB] }
+
+  SUB <- n>n1 & n<n2
+  if(any(SUB)) { b[SUB] <- digamma(n[SUB]/2) - log(n[SUB]/2) }
+
+  SUB <- n>=n2
+  if(any(SUB)) { b[SUB] <- series(1/n[SUB],c(0, -1, -(1/3), 0, 2/15, 0, -(16/63), 0, 16/15, 0, -(256/33))) }
+
+  return(b)
 }

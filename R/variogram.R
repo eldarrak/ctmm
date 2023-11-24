@@ -669,6 +669,8 @@ variogram.ci <- function(t=NULL,dt=NULL,SVF=NULL)
 mean.variogram <- function(x,...)
 {
   x <- c(x,list(...))
+  x <- ubind(x)
+  UERE <- uere(x)
   IDS <- length(x)
 
   # assemble observed lag range
@@ -722,7 +724,7 @@ mean.variogram <- function(x,...)
   # # correct name if not calibrated
   # if(ERR %in% names(x[[1]])) { rename(variogram,"MSE",ERR) }
 
-  variogram <- new.variogram(variogram,info=mean.info(x))
+  variogram <- new.variogram(variogram,info=mean_info(x),UERE=UERE)
   return(variogram)
 }
 #methods::setMethod("mean",signature(x="variogram"), function(x,...) mean.variogram(x,...))
@@ -730,7 +732,7 @@ mean.variogram <- function(x,...)
 
 #################
 # consolodate info attributes from multiple datasets
-mean.info <- function(x)
+mean_info <- function(x)
 {
   if(class(x)[1] != "list") { return( attr(x,"info")$identity ) }
 

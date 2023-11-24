@@ -133,10 +133,10 @@ smoother <- function(data,CTMM,precompute=FALSE,sample=FALSE,residual=FALSE,...)
   {
     # major axis likelihood
     CTMM$sigma <- SIGMA[1]
-    KALMAN1 <- kalman(z[,1,drop=FALSE],u=NULL,dt=dt,CTMM=CTMM,error=error[,1,1,drop=FALSE],precompute=precompute,sample=sample,residual=residual,...)
+    KALMAN1 <- kalman(z[,1,drop=FALSE],u=NULL,t=t,dt=dt,CTMM=CTMM,error=error[,1,1,drop=FALSE],precompute=precompute,sample=sample,residual=residual,...)
     # minor axis likelihood
     CTMM$sigma <- SIGMA[2]
-    KALMAN2 <- kalman(z[,2,drop=FALSE],u=NULL,dt=dt,CTMM=CTMM,error=error[,2,2,drop=FALSE],precompute=precompute,sample=sample,residual=residual,...)
+    KALMAN2 <- kalman(z[,2,drop=FALSE],u=NULL,t=t,dt=dt,CTMM=CTMM,error=error[,2,2,drop=FALSE],precompute=precompute,sample=sample,residual=residual,...)
 
     if(residual) { return(cbind(KALMAN1,KALMAN2)) }
 
@@ -166,7 +166,7 @@ smoother <- function(data,CTMM,precompute=FALSE,sample=FALSE,residual=FALSE,...)
       error <- error[,1,1,drop=FALSE] # isotropic && UERE redundant error information
     }
 
-    KALMAN <- kalman(z,u=NULL,dt=dt,CTMM=CTMM,error=error,DIM=DIM,precompute=precompute,sample=sample,residual=residual,...)
+    KALMAN <- kalman(z,u=NULL,t=t,dt=dt,CTMM=CTMM,error=error,DIM=DIM,precompute=precompute,sample=sample,residual=residual,...)
     # point estimates will be correct but eccentricity is missing from variances
 
     if(residual) { return(KALMAN) }
@@ -377,10 +377,49 @@ simulate.ctmm <- function(object,nsim=1,seed=NULL,data=NULL,VMM=NULL,t=NULL,dt=N
   info <- attr(object,"info")
   if(!is.null(data)) { info$identity <- glue( attr(data,'info')$identity , info$identity ) }
 
+  # have to do this becaues simulate is an S3 with 3 fixed arguments
+
+  if(class(object)[1] %in% c("data.frame","telemetry"))
+  {
+    TEMP <- data
+    data <- object
+    object <- TEMP
+  }
+
   if(class(nsim)[1] %in% c("data.frame","telemetry"))
   {
+    TEMP <- data
     data <- nsim
-    nsim <- 1
+    nsim <- TEMP
+  }
+
+  if(class(nsim)[1] == "ctmm")
+  {
+    TEMP <- object
+    object <- nsim
+    nsim <- TEMP
+  }
+
+  if(class(seed)[1] %in% c("data.frame","telemetry"))
+  {
+    TEMP <- data
+    data <- seed
+    seed <- TEMP
+  }
+
+  if(class(seed)[1] == "ctmm")
+  {
+    TEMP <- object
+    object <- seed
+    seed <- TEMP
+  }
+
+  if(is.null(nsim)) { nsim <- 1 }
+
+  if(nsim>1)
+  {
+    S <- lapply(1:nsim,function(i){simulate.ctmm(object,seed,data,VMM=VMM,t=t,dt=dt,res=res,complete=complete,precompute=precompute,nsim=1,...)})
+    return(S)
   }
 
   if(is.null(object) && !is.null(VMM)) # 1D
@@ -437,9 +476,8 @@ simulate.ctmm <- function(object,nsim=1,seed=NULL,data=NULL,VMM=NULL,t=NULL,dt=N
       # object$error <- TRUE # avoids unit variance algorithm - data contains fixed errors from fill.data
 
       # calculate trend
-      drift <- get(object$mean)
-      velocity <- drift@velocity(data$t,object) %*% object$mu
-      drift <- drift(data$t,object) %*% object$mu
+      velocity <- drift.velocity(object,data$t) %*% object$mu
+      drift <- drift.mean(object,data$t) %*% object$mu
 
       # detrend for simulation - retrend later
       z <- get.telemetry(data,axes=object$axes)
@@ -586,7 +624,7 @@ simulate.ctmm <- function(object,nsim=1,seed=NULL,data=NULL,VMM=NULL,t=NULL,dt=N
       colnames(z) <- axes
       if(K>1)
       {
-        v <- (v %*% Lambda) + (get(object$mean)@velocity(t,object) %*% mu)
+        v <- (v %*% Lambda) + (drift.velocity(object,t) %*% mu)
         colnames(v) <- paste0("v",axes)
       }
     } # end if(!is.null(object))
@@ -638,15 +676,7 @@ simulate.ctmm <- function(object,nsim=1,seed=NULL,data=NULL,VMM=NULL,t=NULL,dt=N
 
 
 simulate.telemetry <- function(object,nsim=1,seed=NULL,CTMM=NULL,VMM=NULL,t=NULL,dt=NULL,res=1,complete=FALSE,precompute=FALSE,...)
-{
-  if(class(nsim)[1]=="ctmm")
-  {
-    CTMM <- nsim
-    nsim <- 1
-  }
-
-  simulate.ctmm(CTMM,nsim=nsim,seed=seed,data=object,VMM=VMM,t=t,dt=dt,res=res,complete=complete,precompute=precompute,...)
-}
+{ simulate.ctmm(CTMM,nsim=nsim,seed=seed,data=object,VMM=VMM,t=t,dt=dt,res=res,complete=complete,precompute=precompute,...) }
 
 
 ##########################
@@ -696,7 +726,7 @@ predict.ctmm <- function(object,data=NULL,VMM=NULL,t=NULL,dt=NULL,res=1,complete
     r <- object$mean.vec %*% mu
     colnames(r) <- axes
 
-    v <- get(object$mean)@velocity(t,object) %*% mu
+    v <- drift.velocity(object,t) %*% mu
     colnames(v) <- paste0("v",axes)
 
     data <- data.frame(r,v)
@@ -735,9 +765,8 @@ predict.ctmm <- function(object,data=NULL,VMM=NULL,t=NULL,dt=NULL,res=1,complete
     # object$error <- TRUE # avoids unit variance algorithm
 
     # calculate trend
-    drift <- get(object$mean)
-    velocity <- drift@velocity(data$t,object) %*% object$mu
-    drift <- drift(data$t,object) %*% object$mu
+    velocity <- drift.velocity(object,data$t) %*% object$mu
+    drift <- drift.mean(object,data$t) %*% object$mu
 
     # detrend for simulation - retrend later
     z <- get.telemetry(data,axes=axes)

@@ -22,7 +22,7 @@ RateD <- function(CTMM)
   sigma <- (CTMM1$sigma + CTMM2$sigma)/2
   mu <- CTMM1$mu[1,] - CTMM2$mu[1,]
 
-  D <- as.numeric(mu %*% PDsolve(sigma) %*% mu)/4 + log(det(sigma))/2 + nrow(sigma)/2*log(4*pi)
+  D <- as.numeric(mu %*% PDsolve(sigma) %*% mu)/4 + PDlogdet(sigma)/2 + nrow(sigma)/2*log(4*pi)
 
   return(D)
 }
@@ -110,9 +110,9 @@ distance <- function(object,method="Mahalanobis",sqrt=FALSE,level=0.95,debias=TR
       BIAS <- STUFF$BIAS
       VAR <- STUFF$VAR
 
-      if(debias) { MLE <- MLE/BIAS }
+      if(debias) { MLE <- nant(MLE/BIAS,MLE) }
 
-      dof <- 2*MLE^2/VAR
+      dof <- nant(2*MLE^2/VAR,1/VAR)
       CI <- chisq.ci(MLE,DOF=dof,alpha=1-level)
 
       if(sqrt) # sqrt and debias
@@ -121,7 +121,7 @@ distance <- function(object,method="Mahalanobis",sqrt=FALSE,level=0.95,debias=TR
         if(debias) { CI <- CI/chi.bias(max(dof,1)) }
         VAR <- chi.var(dof,CI[2])
         # effective chi^2 dof (not chi dof)
-        dof <- 2*CI[2]^2/VAR
+        dof <- nant(2*CI[2]^2/VAR,1/VAR)
       }
 
       D[i,j,] <- D[j,i,] <- CI

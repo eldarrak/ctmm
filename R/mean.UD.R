@@ -5,7 +5,14 @@ mean.UD <- function(x,weights=NULL,sample=TRUE,...)
   n <- length(x)
   axes <- x[[1]]$axes
 
-  if(is.null(weights)) { weights <- rep(1,length(x)) }
+  if(is.null(weights))
+  {
+    if(x[[1]]@type=="occurrence") # time weighted by default
+    { weights <- sapply(x,function(y){y$W}) }
+    else
+    { weights <- rep(1,length(x)) }
+  }
+
   weights <- weights/max(weights)
   names(weights) <- names(x)
   WEIGHT <- sum(weights)
@@ -15,7 +22,7 @@ mean.UD <- function(x,weights=NULL,sample=TRUE,...)
   # population model
   CTMM <- mean.ctmm(CTMM,weights=weights,sample=sample)
   # population stationary distribution
-  if(sample) { CTMM <- mean.pop(CTMM) }
+  if(sample) { CTMM <- mean_pop(CTMM) }
 
   # harmonic mean bandwidth matrix
   H <- 0
@@ -23,7 +30,7 @@ mean.UD <- function(x,weights=NULL,sample=TRUE,...)
   H <- H/WEIGHT
   H <- PDsolve(H)
 
-  info <- mean.info(x)
+  info <- mean_info(x)
   type <- unique(sapply(x,function(y){attr(y,"type")}))
   if(length(type)>1) { stop("Distribution types ",type," differ.") }
   dV <- prod(x[[1]]$dr)

@@ -230,10 +230,10 @@ PDfunc <-function(M,func=function(m){1/m},sym=TRUE,force=FALSE,pseudo=FALSE,tol=
   # MIN <- last(M)
   # if(MIN<0) { tol <- max(tol,2*abs(MIN)) }
 
-  FORCE <- (M < tol) -> PSEUDO
+  PSEUDO <- (M < tol)
   # PSEUDO <- (abs(M) < tol) # why abs(M)?
 
-  if(any(FORCE) && force) { M[FORCE] <- tol }
+  if(force) { M <- eigen.extrapolate(M) }
   if(any(PSEUDO) && pseudo) { M[PSEUDO] <- 0 }
   M <- func(M)
   if(any(PSEUDO) && pseudo) { M[PSEUDO] <- 0 }
@@ -255,6 +255,7 @@ PDfunc <-function(M,func=function(m){1/m},sym=TRUE,force=FALSE,pseudo=FALSE,tol=
 # Positive definite solver
 PDsolve <- function(M,sym=TRUE,force=FALSE,pseudo=FALSE,tol=.Machine$double.eps)
 {
+  NAMES <- rev( dimnames(M) ) # dimnames for inverse matrix
   DIM <- dim(M)
   if(is.null(DIM))
   {
@@ -282,12 +283,19 @@ PDsolve <- function(M,sym=TRUE,force=FALSE,pseudo=FALSE,tol=.Machine$double.eps)
     REM <- !(INF|ZERO)
     if(any(REM)) { M[REM,REM] <- PDsolve(M[REM,REM,drop=FALSE],force=force,pseudo=pseudo,sym=sym) }
 
+    dimnames(M) <- NAMES
     return(M)
   }
 
   if(!force && !pseudo)
   {
-    if(DIM[1]==1) { return(matrix(1/M,c(1,1))) }
+    if(DIM[1]==1)
+    {
+      M <- matrix(1/M,c(1,1))
+
+      dimnames(M) <- NAMES
+      return(M)
+    }
     if(DIM[1]==2)
     {
       DET <- M[1,1]*M[2,2]-M[1,2]*M[2,1]
@@ -295,7 +303,10 @@ PDsolve <- function(M,sym=TRUE,force=FALSE,pseudo=FALSE,tol=.Machine$double.eps)
       SWP <- M[1,1] ; M[1,1] <- M[2,2] ; M[2,2] <- SWP
       M[1,2] <- -M[1,2]
       M[2,1] <- -M[2,1]
-      return( M/DET )
+      M <- M/DET
+
+      dimnames(M) <- NAMES
+      return(M)
     }
   }
 
@@ -332,6 +343,7 @@ PDsolve <- function(M,sym=TRUE,force=FALSE,pseudo=FALSE,tol=.Machine$double.eps)
   # symmetrize
   if(sym) { M <- He(M) }
 
+  dimnames(M) <- NAMES
   return(M)
 }
 
@@ -344,10 +356,13 @@ PDlogdet <- function(M,sym=TRUE,force=FALSE,tol=.Machine$double.eps,...)
     M <- as.matrix(M)
     DIM <- dim(M)
   }
+
   if(DIM[1]==0)
+  { return(0) } # tr[log([0x0])] == 0
+  else if(DIM[1]==0)
   {
     M <- clamp(M,0,Inf)
-    if(force && M<=0) { M <- tol }
+    if(force) { M <- eigen.extrapolate(M) }
     M <- log(M)
     return(M)
   }
@@ -371,10 +386,10 @@ PDlogdet <- function(M,sym=TRUE,force=FALSE,tol=.Machine$double.eps,...)
   # symmetrize
   if(sym) { M <- He(M) }
 
-  M <- eigen(M,only.values=TRUE)$values
+  M <- eigen(M)$values
   M <- clamp(M,0,Inf)
 
-  if(force && any(M<=0)) { M[M<=0] <- tol }
+  if(force) { M <- eigen.extrapolate(M) }
 
   M <- sum(log(M))
 
@@ -461,8 +476,22 @@ sqrtm <- function(M,force=FALSE,pseudo=FALSE)
   return(M)
 }
 
+# fix matrices with infinite variances
+fixInf <- function(M)
+{
+  INF <- M==Inf
+  DIAG <- diag(TRUE,nrow(M))
 
-unnant <- function(M)
+  if(any(INF)) { M[INF] <- 0 }
+
+  INF <- INF & DIAG
+  if(any(INF)) { M[INF] <- Inf }
+
+  return(M)
+}
+
+# fix matrices with 0/0 that should have infinite variances
+fixNaN <- function(M)
 {
   NAN <- is.nan(M)
   DIAG <- diag(TRUE,nrow(M))
@@ -479,7 +508,7 @@ unnant <- function(M)
 # condition number
 conditionNumber <- function(M)
 {
-  M <- try(eigen(M,only.values=TRUE)$values)
+  M <- try(eigen(M)$values)
   if(class(M)[1]=="numeric")
   {
     M <- last(M)/M[1]
@@ -541,7 +570,7 @@ mat.min <- function(M)
   if(any(is.na(M)) || any(abs(M)==Inf) || any(diag(M)==0)) { return(0) }
   diag(M) <- abs(diag(M))
   M <- stats::cov2cor(M)
-  M <- eigen(M,only.values=TRUE)$values
+  M <- eigen(M)$values
   M <- last(M)
   return(M)
 }
@@ -578,4 +607,24 @@ ext.mat <- function(...,MAX=TRUE)
 
   MATS <- Reduce("+",MATS)
   return(MATS)
+}
+
+
+eigen.extrapolate <- function(M)
+{
+  if(all(M>0)) { return(M) }
+
+  LOG <- log(M[M>0]/M[1])
+  LOG <- diff(LOG)
+  if(length(LOG))
+  { LOG <- last(LOG) }
+  else
+  { LOG <- log(.Machine$double.eps) }
+
+  BAD <- sum(M<=0)
+  LAST <- last(M[M>0])
+  if(length(LAST)==0) { LAST <- 1 } # no positive values to extrapolate from
+  M[M<=0] <- LAST * exp(LOG*1:BAD)
+
+  return(M)
 }

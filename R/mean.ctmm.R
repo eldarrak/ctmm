@@ -1,286 +1,7 @@
-###########
-# log-transformed parameters
-# debias includes bias correction for chi^2 to log(chi^2)
-# matrix casts location covariance, diffusion rate, velocity covariance all as distinct matrices for above bias correction
-log.ctmm <- function(CTMM,debias=FALSE,...)
-{
-  if(class(CTMM)[1]=="list") { return(log.ctmms(CTMM,debias=debias,...)) }
-
-  SIGMA <- c("major","minor","angle")
-  isotropic <- CTMM$isotropic
-  axes <- CTMM$axes
-  features <- CTMM$features
-  par <- get.parameters(CTMM,features,linear.cov=FALSE)
-  sigma <- CTMM$sigma
-  COV <- CTMM$COV
-
-  ### log transform sigma
-  # log transform major-minor in sigma and COV
-  PARS <- SIGMA[SIGMA %in% features]
-  PARS <- PARS[PARS %in% POSITIVE.PARAMETERS]
-
-  COV[PARS,] <- COV[PARS,,drop=FALSE] / par[PARS]
-  COV[,PARS] <- t( t(COV[,PARS,drop=FALSE]) / par[PARS] )
-
-  sigma <- log.covm(sigma)
-
-  # convert log(eigen) to log(xy) in COV
-  PARS <- SIGMA[SIGMA %in% features]
-  if(isotropic)
-  { par[PARS] <- sigma@par[PARS] }
-  if(!isotropic)
-  {
-    par[PARS] <- sigma[c(1,4,2)]  # log 'xx', 'yy', 'xy'
-
-    J <- J.sigma.par(sigma@par)
-    COV[PARS,] <- J %*% COV[PARS,,drop=FALSE]
-    COV[,PARS] <- COV[,PARS,drop=FALSE] %*% t(J)
-  }
-
-  ### log transform all positive parameters that haven't been logged
-  # features to log transform
-  FEAT.ALL <- features[ features %in% POSITIVE.PARAMETERS | grepl("error",features) ]
-  FEAT <- FEAT.ALL[FEAT.ALL %nin% SIGMA]
-
-  if(length(FEAT))
-  {
-    COV[FEAT,] <- COV[FEAT,,drop=FALSE] / par[FEAT]
-    COV[,FEAT] <- t( t(COV[,FEAT,drop=FALSE]) / par[FEAT] )
-    par[FEAT] <- log(par[FEAT])
-  }
-
-  # log chi^2 bias correction
-  VAR <- diag(COV) # don't include features that shouldn't be there
-  SUB <- features[features %in% c(FEAT.ALL,"angle") & VAR[features]<Inf]
-  if(debias && length(SUB))
-  {
-    COR <- stats::cov2cor(COV)
-    COR <- nant(COR,0)
-
-    # diagonalize and log-chi^2 debias relevant parameter estimates
-    EIGEN <- eigen(COV[SUB,SUB])
-    dimnames(EIGEN$vectors) <- list(SUB,SUB)
-    names(EIGEN$values) <- SUB
-
-    # fix signs
-    if(isotropic) { PARS <- "major" } else { PARS <- c("major","minor") }
-    # VAR goes in log numerator for chi^2 variates: variance, diffusion, MS speed, ...
-    for(i in 1:ncol(EIGEN$vectors)) { if(sum(EIGEN$vectors[PARS,i])<0) { EIGEN$vectors[,i] <- -EIGEN$vectors[,i] } }
-
-    # transform to diagonalized basis with VARs in log numerator
-    par[SUB] <- t(EIGEN$vectors) %*% par[SUB] # diagonalize parameters
-    DOF <- 2/EIGEN$values # log-chi^2 VAR-DOF relation
-    BIAS <- digamma(DOF/2)-log(DOF/2) # negative bias for log(chi^2) variates
-    BIAS <- nant(BIAS,0)
-    BIAS <- pmax(BIAS,digamma(1/2)-log(1/2)) # clamp to 1 DOF
-    par[SUB] <- par[SUB] - BIAS # E[log(chi^2)] bias correction
-    par[SUB] <- c(EIGEN$vectors %*% par[SUB]) # transform back (still under logarithm)
-
-    # log-gamma variance (better than delta method)
-    EIGEN$values <- trigamma(DOF/2)
-    EIGEN <- EIGEN$vectors %*% (EIGEN$values * t(EIGEN$vectors))
-
-    COR[SUB,SUB] <- stats::cov2cor(EIGEN)
-    # diag(COR) <- nant(diag(COR),1)
-    # COR <- nant(COR,0)
-    VAR[SUB] <- diag(EIGEN)
-    COV <- COR * outer(sqrt(VAR))
-    COV <- nant(COV,0)
-  }
-
-  RETURN <- list(par=par,COV=COV,isotropic=isotropic)
-  return(RETURN)
-}
-
-
-#####################
-# inverse transformation of above
-exp.ctmm <- function(CTMM,debias=FALSE,variance=TRUE)
-{
-  SIGMA <- c("major","minor","angle")
-  isotropic <- CTMM$isotropic
-  axes <- CTMM$axes
-  features <- CTMM$features
-  variance <- array(variance,length(features))
-  names(variance) <- features
-  if("par" %in% names(CTMM))
-  { par <- CTMM$par }
-  else
-  { par <- get.parameters(CTMM,features,linear.cov=TRUE) }
-  COV <- CTMM$COV
-  POV <- CTMM$POV
-  COV.POV <- CTMM$COV.POV
-  JP <- diag(1,nrow(POV))
-  dimnames(JP) <- dimnames(COV)
-
-  # log chi^2 bias correction
-  FEAT.ALL <- features[ features %in% POSITIVE.PARAMETERS | grepl("error",features) ]
-  SUB <- features[features %in% c(FEAT.ALL,"angle")]
-  if(debias && length(SUB))
-  {
-    ##################
-    ### diagonalize and log-chi^2 debias point estimates
-    EIGEN <- (COV+POV)[SUB,SUB]
-    EIGEN <- eigen(EIGEN)
-    dimnames(EIGEN$vectors) <- list(SUB,SUB)
-    names(EIGEN$values) <- SUB
-    EIGEN$values <- clamp(EIGEN$values,0,Inf)
-
-    # fix signs
-    if(isotropic) { PARS <- "major" } else { PARS <- c("major","minor") }
-    # VAR goes in log numerator for chi^2 variates: variance, diffusion, MS speed, ...
-    for(i in 1:nrow(EIGEN$vectors)) { if(sum(EIGEN$vectors[PARS,i])<0) { EIGEN$vectors[,i] <- -EIGEN$vectors[,i] } }
-
-    # transform to diagonalized basis with VARs in log numerator
-    par[SUB] <- t(EIGEN$vectors) %*% par[SUB] # diagonalize parameters
-
-    # log-gamma variance (better than delta method)
-    DOF <- 2*itrigamma(EIGEN$values)
-    BIAS <- digamma(DOF/2)-log(DOF/2) # negative bias for log(chi^2) variates
-    BIAS <- nant(BIAS,0)
-    BIAS <- pmax(BIAS,digamma(1/2)-log(1/2)) # clamp to 1 DOF
-    par[SUB] <- par[SUB] + BIAS # E[log-chi^2] bias correction
-    par[SUB] <- c(EIGEN$vectors %*% par[SUB]) # transform back (still under logarithm)
-
-    ################
-    ### diagonalize and log-chi^2 debias COV
-    VAR <- diag(COV)
-    COR <- stats::cov2cor(COV)
-
-    EIGEN <- COV[SUB,SUB]
-    EIGEN <- eigen(EIGEN)
-    dimnames(EIGEN$vectors) <- list(SUB,SUB)
-    names(EIGEN$values) <- SUB
-    EIGEN$values <- clamp(EIGEN$values,0,Inf)
-
-    # fix signs
-    # VAR goes in log numerator for chi^2 variates: variance, diffusion, MS speed, ...
-    for(i in 1:nrow(EIGEN$vectors)) { if(sum(EIGEN$vectors[PARS,i])<0) { EIGEN$vectors[,i] <- -EIGEN$vectors[,i] } }
-
-    # log-gamma variance (better than delta method)
-    DOF <- 2*itrigamma(EIGEN$values)
-    EIGEN$values <- 2/DOF
-    EIGEN <- EIGEN$vectors %*% (EIGEN$values * t(EIGEN$vectors))
-
-    COR[SUB,SUB] <- stats::cov2cor(EIGEN)
-    VAR[SUB] <- diag(EIGEN)
-    COV <- COR * outer(sqrt(VAR))
-
-    #################
-    ### diagonalize and log-chi^2 debias POV
-    VAR <- diag(POV)
-    if(all(VAR>.Machine$double.eps))
-    {
-      COR <- stats::cov2cor(POV)
-
-      EIGEN <- POV[SUB,SUB]
-      EIGEN <- eigen(EIGEN)
-      dimnames(EIGEN$vectors) <- list(SUB,SUB)
-      names(EIGEN$values) <- SUB
-      EIGEN$values <- clamp(EIGEN$values,0,Inf)
-
-      # fix signs
-      # VAR goes in log numerator for chi^2 variates: variance, diffusion, MS speed, ...
-      for(i in 1:nrow(EIGEN$vectors)) { if(sum(EIGEN$vectors[PARS,i])<0) { EIGEN$vectors[,i] <- -EIGEN$vectors[,i] } }
-
-      # log-gamma variance (better than delta method)
-      SCALE <- EIGEN$values
-
-      DOF <- 2*itrigamma(EIGEN$values)
-      EIGEN$values <- 2/DOF
-      POV.SUB <- EIGEN$vectors %*% (EIGEN$values * t(EIGEN$vectors))
-      COR[SUB,SUB] <- stats::cov2cor(POV.SUB)
-      VAR[SUB] <- diag(POV.SUB)
-      POV <- COR * outer(sqrt(VAR))
-
-      SCALE <- sqrt(EIGEN$values/SCALE)
-      SCALE <- nant(SCALE,1)
-      JP[SUB,SUB] <- EIGEN$vectors %*% diag(SCALE) %*% t(EIGEN$vectors)
-    }
-  }
-
-  ### exp transform all positive parameters except sigma
-  # features to log transform
-  FEAT <- features[features %in% POSITIVE.PARAMETERS]
-  FEAT <- FEAT[FEAT %nin% SIGMA]
-
-  if(length(FEAT))
-  {
-    par[FEAT] <- exp(par[FEAT])
-
-    COV[FEAT,] <- COV[FEAT,,drop=FALSE] * par[FEAT]
-    COV[,FEAT] <- t( t(COV[,FEAT,drop=FALSE]) * par[FEAT] )
-
-    POV[FEAT,] <- POV[FEAT,,drop=FALSE] * par[FEAT]
-    POV[,FEAT] <- t( t(POV[,FEAT,drop=FALSE]) * par[FEAT] )
-
-    JP[FEAT,] <- JP[FEAT,] * par[FEAT]
-  }
-
-  ### exp transform sigma
-  PARS <- SIGMA[SIGMA %in% features]
-  sigma <- par[PARS]
-
-  # convert COV[log(xy)] to COV[log(eigen)] (and POV)
-  if(!isotropic)
-  {
-    J <- J.par.sigma(sigma)
-
-    COV[PARS,] <- J %*% COV[PARS,,drop=FALSE]
-    COV[,PARS] <- COV[,PARS,drop=FALSE] %*% t(J)
-
-    POV[PARS,] <- J %*% POV[PARS,,drop=FALSE]
-    POV[,PARS] <- POV[,PARS,drop=FALSE] %*% t(J)
-
-    JP[PARS,] <- J %*% JP[PARS,,drop=FALSE]
-
-    sigma <- matrix(sigma[c('major','angle','angle','minor')],2,2)
-  }
-  # else sigma is just 'major'
-
-  # exp of eigen
-  sigma <- covm(sigma,axes=axes,isotropic=isotropic)
-  sigma <- exp.covm(sigma)
-
-  # copy over
-  par[PARS] <- sigma@par[PARS]
-
-  PARS <- PARS[PARS %in% POSITIVE.PARAMETERS]
-
-  COV[PARS,] <- COV[PARS,,drop=FALSE] * par[PARS]
-  COV[,PARS] <- t( t(COV[,PARS,drop=FALSE]) * par[PARS] )
-
-  POV[PARS,] <- POV[PARS,,drop=FALSE] * par[PARS]
-  POV[,PARS] <- t( t(POV[,PARS,drop=FALSE]) * par[PARS] )
-
-  JP[PARS,] <- JP[PARS,,drop=FALSE] * par[PARS]
-
-  # finally transform COV.POV
-  if(any(variance))
-  {
-    JP <- quad2lin(JP)
-    NAMES <- dimnames(COV.POV)
-    COV.POV <- JP %*% COV.POV %*% t(JP)
-    dimnames(COV.POV) <- NAMES
-  }
-  else
-  { COV.POV <- NULL }
-
-  CTMM$sigma <- sigma
-  CTMM$COV <- COV
-  CTMM$POV <- POV
-  CTMM$COV.POV <- COV.POV
-
-  CTMM$par <- NULL
-  CTMM <- set.parameters(CTMM,par)
-
-  return(CTMM)
-}
-
-# M %*% X %*% t(M) -> L %*% X[TRI]
+# M %*% S %*% t(M) -> L %*% S[TRI]
 quad2lin <- function(M,diag=FALSE)
 {
-  M <- rbind(M)
+  M <- rbind(M) # [n,m]
   n <- nrow(M)
   m <- ncol(M)
 
@@ -296,15 +17,26 @@ quad2lin <- function(M,diag=FALSE)
 
   for(i in 1:p)
   {
-    E <- array(0,dim(M))
+    # E <- array(0,dim(M))
+    E <- array(0,c(m,m))
     E[TRI[i]] <- 1
     E <- E + t(E)
     E <- E/max(E)
-    E <- M %*% E %*% t(M) # [n,n]
+
     if(diag) # n!=m and only care about n variances
-    { E <- diag(E) }
+    {
+      # O(n^2) slow method like below
+      # E <- M %*% E %*% t(M) # [n,n]
+      # E <- diag(E)
+
+      # O(n) fast method
+      E <- sapply(1:n,function(i){M[i,] %*% E %*% M[i,]})
+    }
     else # n==m and want full covariance
-    { E <- E[TRI] }
+    {
+      E <- M %*% E %*% t(M) # [n,n]
+      E <- E[TRI]
+    }
     J[,i] <- E
   }
 
@@ -312,7 +44,7 @@ quad2lin <- function(M,diag=FALSE)
 }
 
 #############
-mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
+mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",select="all",formula=FALSE,...)
 {
   if(is.null(weights))
   { weights <- rep(1,length(x)) }
@@ -368,9 +100,35 @@ mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
   colnames(MU) <- FEATURES
   dimnames(SIGMA) <- list(NULL,FEATURES,FEATURES)
 
+  # temporary code for linear functional response
+  if(class(formula)[1]=="formula")
+  { formula <- all.vars(formula) } # now character
+  if(class(formula)[1]=="character")
+  { formula <- BETA[BETA %in% formula] }
+  else
+  { formula <- array(formula,length(BETA)) }
+
+  if(length(formula)) # get predictors for model-II regression - linear response function
+  {
+    TERMS <- formula
+    X <- array(0,c(N,length(TERMS)))
+    colnames(X) <- TERMS
+    SX <- array(0,c(N,length(TERMS),length(TERMS)))
+    dimnames(SX) <- list(NULL,TERMS,TERMS)
+  }
+  else
+  { X <- SX <- FALSE }
+
   for(i in 1:N)
   {
-    x[[i]] <- log.ctmm(x[[i]],debias=debias)
+    if(length(formula) && length(x[[i]]$used.mean))
+    {
+      NAMES <- names(x[[i]]$used.mean)
+      X[i,NAMES] <- x[[i]]$used.mean
+      SX[i,NAMES,NAMES] <- x[[i]]$used.cov
+    }
+
+    x[[i]] <- log_ctmm(x[[i]],debias=debias)
     features <- names(x[[i]]$par)
 
     if(TAU.EXPAND && "tau" %in% features)
@@ -420,154 +178,339 @@ mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
   {
     J["major",c("major","minor")] <- c(1/2,1/2) # average variance
     J["minor",c("major","minor")] <- c(1,-1) # difference / eccentricity
+
+    if("tau" %in% FEATURES)
+    { J["tau",c("major","minor","tau")] <- c(1/2,1/2,-1) } # D
+
+    if("tau position" %in% FEATURES)
+    { J["tau position",c("major","minor","tau position")] <- c(1/2,1/2,-1) } # D
   }
+  else
+  {
+    if("tau" %in% FEATURES)
+    { J["tau",c("major","tau")] <- c(1,-1) } # D
 
-  if("tau" %in% FEATURES)
-  { J["tau",c("major","tau")] <- c(1,-1) } # D
-
-  if("tau position" %in% FEATURES)
-  { J["tau position",c("major","tau position")] <- c(1,-1) } # D
+    if("tau position" %in% FEATURES)
+    { J["tau position",c("major","tau position")] <- c(1,-1) } # D
+  }
 
   # if("tau velocity" %in% FEATURES)
   # { J["tau velocity",c("major","tau position","tau velocity")] <- c(1,-1,-1) } # MSV correlates with D
 
-  if("omega" %in% FEATURES) # MSV - delta-MSV # sigma cancels out
-  {
-    if("tau" %in% FEATURES) # OUf
-    { J["omega",c("tau","omega")] <- c(1,-1) }
-    else if(all(c("tau position","tau velocity") %in% FEATURES)) # OUF
-    { J["omega",c("tau position","tau velocity","omega")] <- c(1,1,-2) }
-    else if("tau velocity" %in% FEATURES) # IOU
-    { J["omega",c("tau velocity","omega")] <- c(1,-1) }
-    else if("tau position" %in% FEATURES) # OU
-    { J["omega",c("tau position","omega")] <- c(1,-1) }
-  }
-
-  tJ <- t(J)
-  MU <- MU %*% tJ
+  # if("omega" %in% FEATURES) # MSV - delta-MSV # sigma cancels out
+  # {
+  #   if("tau" %in% FEATURES) # OUf
+  #   { J["omega",c("tau","omega")] <- c(1,-1) }
+  #   else if(all(c("tau position","tau velocity") %in% FEATURES)) # OUF
+  #   { J["omega",c("tau position","tau velocity","omega")] <- c(1,1,-2) }
+  #   else if("tau velocity" %in% FEATURES) # IOU
+  #   { J["omega",c("tau velocity","omega")] <- c(1,-1) }
+  #   else if("tau position" %in% FEATURES) # OU
+  #   { J["omega",c("tau position","omega")] <- c(1,-1) }
+  # }
 
   # missing data / infinite uncertainties
-  INF <- t(apply(SIGMA,1,function(M){diag(M)==Inf})) # [ind,par]
+  INF <- apply(SIGMA,1,function(M){diag(M)==Inf}) # [par,ind]
+  dim(INF) <- dim(SIGMA)[2:1]
+  INF <- t(INF) # [ind,par]
+  colnames(INF) <- colnames(SIGMA)
+
+  tJ <- t(J)
+  MU[INF] <- 0 # zero out infinite uncertainties (point estimates could be infinite after log transform)
+  MU <- MU %*% tJ
 
   SIGMA <- SIGMA %.% tJ
   for(i in 1:nrow(SIGMA)) { for(j in 1:ncol(SIGMA)) { if(INF[i,j]) { SIGMA[i,j,] <- SIGMA[i,,j] <- 0; SIGMA[i,j,j] <- Inf } } }
   SIGMA <- aperm(SIGMA,c(1,3,2))
   SIGMA <- SIGMA %.% tJ
   for(i in 1:nrow(SIGMA)) { for(j in 1:ncol(SIGMA)) { if(INF[i,j]) { SIGMA[i,j,] <- SIGMA[i,,j] <- 0; SIGMA[i,j,j] <- Inf } } }
+  dimnames(SIGMA) <- list(NULL,FEATURES,FEATURES)
+
+  # can't make this infinite before or will mess up above calculations
+  P <- c("minor","angle")
+  for(i in 1:length(x))
+  {
+    if(!ISO && x[[i]]$isotropic)
+    {
+      INF[i,P] <- TRUE
+      SIGMA[i,P,] <- 0
+      SIGMA[i,,P] <- 0
+      SIGMA[i,P,P] <- diag(Inf,2)
+    }
+  }
 
   # number of estimated features (amount of data)
   DIM <- length(FEATURES)
 
-  MEANS <- list()
-  MEANS[["isotropic"]] <- array(TRUE,DIM)
-  names(MEANS[["isotropic"]]) <- FEATURES
-  if(!ISO)
+  make.names <- function(MEANS,VARS,OFF=FALSE)
   {
-    MEANS[["anisotropic"]] <- MEANS[["isotropic"]]
-    MEANS[["anisotropic"]][c('minor','angle')] <- FALSE
+    MEANS <- rbind(MEANS)
+    VARS <- rbind(VARS)
+    OFF <- OFF && sum(VARS)>1 # no correlations present
+    OFF <- ifelse(OFF,"COV","VAR")
+
+    MEANS <- sapply(1:nrow(MEANS),function(i){ paste(FEATURES[MEANS[i,]],collapse=",") })
+    VARS <- sapply(1:nrow(VARS),function(i){ paste(FEATURES[VARS[i,]],collapse=",") })
+
+    NAMES <- paste0("E[",MEANS,"] ",OFF,"[",VARS,"]")
+
+    return(NAMES)
   }
 
-  FM <- list()
-  for(m in names(MEANS))
+  # number of variance-covariance parameters modeled
+  num.pars <- function(FIT,mean=FALSE)
   {
-    ms <- paste0(m,"-\u03C3")
-    OLD <- list()
+    V <- FIT$VARS
+    V <- V[upper.tri(V,diag=TRUE)]
+    V <- sum(V)
+    if(mean) { V <- V + sum(FIT$INT) }
+    return(V)
+  }
 
-    S <- paste("Dirac-\u03B4(\u03A3)",ms)
-    if(trace) { message("Fitting autocovariance model ",S) }
-    OLD[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,VARS=FALSE,MEANS=MEANS[[m]],...)
+  # data can potentially support these parameters only
+  MEAN.MAX <- colSums(!INF)>0
+  VAR.MAX <- colSums(!INF)>1
+  # these mean parameters can't be turned off
+  MEAN.MIN <- rep(TRUE,DIM)
+  names(MEAN.MIN) <- FEATURES
+  if("minor" %in% FEATURES) { MEAN.MIN[c("minor","angle")] <- FALSE } # can be mean zero
+  # MEAN.MIN[BETA] <- FALSE # can be mean-zero
 
-    S <- paste("diag(\u03A3)",ms)
-    VARS <- array(TRUE,DIM)
-    names(VARS) <- FEATURES
-    # if(m=="isotropic") { VARS[c('minor','angle')] <- FALSE }
-    VARS <- diag(VARS,DIM)
-    if(trace) { message("Fitting autocovariance model ",S) }
-    OLD[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,VARS=VARS,MEANS=MEANS[[m]],...)
-    VARS <- diag(OLD[[S]]$VARS)
-    GUESS <- OLD[[S]]
+  ##########
+  ## build up phase
+  ## minimal terms
+  OLD <- list()
+  MEANS <- MEAN.MIN
+  VARS <- rep(FALSE,DIM)
+  names(VARS) <- FEATURES
 
-    # pair down unsupported variances
-    while(any(VARS))
+  S <- make.names(MEANS,VARS)
+  if(trace) { message("Fitting covariance model ",S) }
+  OLD[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=diag(VARS,DIM),MEANS=MEANS,WARN=FALSE,...)
+
+  ## add terms one by one
+  GUESS <- OLD[[1]]
+  while(any(!VARS) || any(!MEANS))
+  {
+    NEW <- list()
+
+    ########################
+    ## add variance terms ##
+    # which terms are presently off
+    try <- which(!VARS & VAR.MAX & MEANS) # only add vars to means
+    if(length(try))
     {
-      # which terms are presently off
-      try <- which(VARS)
+      TRYS <- array(VARS,c(DIM,length(try)))
+      TRYS <- t(TRYS) # [off->on,all]
+      colnames(TRYS) <- FEATURES
+      for(i in 1:nrow(TRYS)) { TRYS[i,try[i]] <- TRUE }
+      if("minor" %in% FEATURES) { TRYS[,"minor"] <- TRYS[,"angle"] <- TRYS[,"minor"] | TRYS[,"angle"] }
+      TRYS <- unique(TRYS)
+
+      # models that we will try by turning one term on
+      NAMES <- make.names(MEANS,TRYS)
+      # don't try what's been done
+      SUB <- NAMES %nin% names(OLD)
+      SUB <- which(SUB)
+
+      TRYS <- TRYS[SUB,,drop=FALSE]
+      NAMES <- NAMES[SUB]
+
+      # fit all
+      for(i in 1%:%length(NAMES))
+      {
+        S <- NAMES[i]
+        if(trace) { message("Fitting covariance model ",S) }
+        NEW[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=diag(TRYS[i,],DIM),MEANS=MEANS,GUESS=GUESS,WARN=FALSE,...)
+      }
+    }
+
+    ####################
+    ## add mean terms ##
+    # which terms are presently off
+    try <- which(!MEANS & MEAN.MAX)
+    if(length(try))
+    {
+      TRYS <- array(MEANS,c(DIM,length(try)))
+      TRYS <- t(TRYS) # [off->on,all]
+      colnames(TRYS) <- FEATURES
+      for(i in 1:nrow(TRYS)) { TRYS[i,try[i]] <- TRUE }
+      if("minor" %in% FEATURES) { TRYS[,"minor"] <- TRYS[,"angle"] <- TRYS[,"minor"] | TRYS[,"angle"] }
+      TRYS <- unique(TRYS)
+
+      # models that we will try by turning one term on
+      NAMES <- make.names(TRYS,VARS)
+      # don't try what's been done
+      SUB <- NAMES %nin% names(OLD)
+      SUB <- which(SUB)
+
+      TRYS <- TRYS[SUB,,drop=FALSE]
+      NAMES <- NAMES[SUB]
+
+      # fit all
+      for(i in 1%:%length(NAMES))
+      {
+        S <- NAMES[i]
+        if(trace) { message("Fitting covariance model ",S) }
+        NEW[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=diag(VARS,DIM),MEANS=TRYS[i,],GUESS=GUESS,WARN=FALSE,...)
+      }
+    }
+
+    ###############
+    # wrap up
+    if(!length(NEW)) { break } # no new models to fit
+
+    ICS <- sapply(NEW,function(m){m[[IC]]})
+    BEST <- which.min(ICS)
+    BEST <- NEW[[BEST]]
+    GUESS <- BEST
+    MEANS <- BEST$INT
+    VARS <- diag(BEST$VARS)
+
+    OLD <- c(OLD,NEW)
+
+    if(BEST[[IC]]==Inf) { break }
+  } # finish build up variances
+
+  ###########
+  ## pair down terms phase
+  # start with all variances or best (if IC==Inf)
+  NAME.ALL <- make.names(MEAN.MAX,VAR.MAX)
+  if(NAME.ALL %in% names(OLD))
+  { BEST <- OLD[[NAME.ALL]] }
+  else # limited data cannot support all variances
+  {
+    ICS <- sapply(OLD,function(m){m[[IC]]})
+    BEST <- which.min(ICS)
+    BEST <- OLD[[BEST]]
+  }
+  GUESS <- BEST
+  MEANS <- BEST$INT
+  VARS <- diag(BEST$VARS)
+
+  ##############
+  # pair down variances phase
+  while(sum(VARS)>1 || sum(MEANS)>1)
+  {
+    NEW <- list()
+    NAMES1 <- NAMES2 <- NULL
+    NEW1 <- NEW2 <- NULL
+
+    #################
+    ### var terms ###
+    # which terms are presently off
+    try <- which(VARS)
+    if(length(try))
+    {
       TRYS <- array(VARS,c(DIM,length(try)))
       TRYS <- t(TRYS) # [off->on,all]
       colnames(TRYS) <- FEATURES
       for(i in 1:nrow(TRYS)) { TRYS[i,try[i]] <- FALSE }
-      if("minor" %in% FEATURES)
-      {
-        TRYS[,"minor"] <- TRYS[,"angle"] <- TRYS[,"minor"] & TRYS[,"angle"]
-        TRYS <- unique(TRYS)
-      }
-      # models that we will try by turning one term on
-      NAMES <- sapply(1:nrow(TRYS),function(i){paste0(FEATURES[TRYS[i,]],collapse=",")})
-      NAMES <- paste0("[",NAMES,"]")
+      if("minor" %in% FEATURES) { TRYS[,"minor"] <- TRYS[,"angle"] <- TRYS[,"minor"] & TRYS[,"angle"] }
+      TRYS <- unique(TRYS)
+      # models that we will try by turning one term off
+      NAMES <- NAMES1 <- make.names(MEANS,TRYS)
+      # paired down models that we haven't attempted yet
+      SUB <- NAMES %nin% names(OLD)
+      NEW.NAMES <- NEW1 <- NAMES[SUB]
+      TRYS <- TRYS[SUB,,drop=FALSE]
 
       # fit all
-      NEW <- list()
-      for(i in 1%:%length(NAMES))
+      for(i in 1%:%length(NEW.NAMES))
       {
-        S <- paste0("diag(\u03A3)",NAMES[i]," ",ms)
-        if(trace) { message("Fitting autocovariance model ",S) }
-        VARS <- diag(TRYS[i,],length(FEATURES))
-        NEW[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,VARS=VARS,MEANS=MEANS[[m]],GUESS=GUESS,...)
+        S <- NEW.NAMES[i]
+        if(trace) { message("Fitting covariance model ",S) }
+        NEW[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=diag(TRYS[i,],DIM),MEANS=MEANS,GUESS=GUESS,WARN=FALSE,...)
       }
-
-      # didn't progress this round, will break
-      BREAK <- min(sapply(OLD,function(m){m[[IC]]})) < min(sapply(NEW,function(m){m[[IC]]}))
-
-      OLD <- c(OLD,NEW)
-      ICS <- sapply(OLD,function(m){m[[IC]]})
-      BEST <- which.min(ICS)
-      BEST <- OLD[[BEST]]
-      GUESS <- BEST
-      VARS <- diag(BEST$VARS)
-
-      if(BREAK) { break }
     }
 
-    # now see if correlations are supported
-    i <- sum(VARS)
-    if((N-1)*i >= i*(i+1)/2)
+    #################
+    ### mean terms ###
+    # which terms are presently off
+    try <- which(MEANS & !MEAN.MIN & !VARS)
+    if(length(try))
     {
-      if(i<DIM)
+      TRYS <- array(MEANS,c(DIM,length(try)))
+      TRYS <- t(TRYS) # [off->on,all]
+      colnames(TRYS) <- FEATURES
+      for(i in 1:nrow(TRYS)) { TRYS[i,try[i]] <- FALSE }
+      if("minor" %in% FEATURES) { TRYS[,"minor"] <- TRYS[,"angle"] <- TRYS[,"minor"] & TRYS[,"angle"] }
+      TRYS <- unique(TRYS)
+      # models that we will try by turning one term off
+      NAMES <- NAMES2 <- make.names(TRYS,VARS)
+      # paired down models that we haven't attempted yet
+      SUB <- NAMES %nin% names(OLD)
+      NEW.NAMES <- NEW2 <- NAMES[SUB]
+      TRYS <- TRYS[SUB,,drop=FALSE]
+
+      # fit all
+      for(i in 1%:%length(NEW.NAMES))
       {
-        S <- paste0(FEATURES[VARS],collapse=",")
-        S <- paste0("\u03A3[",S,"] ",ms)
+        S <- NEW.NAMES[i]
+        if(trace) { message("Fitting covariance model ",S) }
+        NEW[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=diag(VARS,DIM),MEANS=TRYS[i,],GUESS=GUESS,WARN=FALSE,...)
       }
-      else
-      { S <- paste("\u03A3",ms) }
-      if(trace) { message("Fitting autocovariance model ",S) }
-      OLD[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,VARS=VARS,MEANS=MEANS[[m]],GUESS=GUESS,...)
-    } # end correlation fit
+    }
 
-    FM <- c(FM,OLD)
-  } # for(m in names(MEANS))
+    ###############
+    ## wrap up ##
+    OLD <- c(OLD,NEW)
+    NEW <- OLD[c(NAMES1,NAMES2)] # also consider models that we've already fitted (with the right number of parameters)
+    if(!length(c(NEW1,NEW2))) { break } # stopped trying new models
 
-  ICS <- sapply(FM,function(m){m[[IC]]})
-  names(ICS) <- names(FM)
-  NAME <- which.min(ICS)
-  NAME <- names(ICS)[NAME]
-  R <- FM[[NAME]]
-  R$name <- NAME
-  R$isotropic <- !grepl("anisotropic",R$name)
-  VARS <- diag(R$VARS)
+    ICS <- sapply(NEW,function(m){m[[IC]]})
+    BEST <- which.min(ICS)
+    BEST <- NEW[[BEST]]
+    GUESS <- BEST
+    MEANS <- BEST$INT
+    VARS <- diag(BEST$VARS)
+  } # finish pair down variances
+
+  # take best variance model
+  ICS <- sapply(OLD,function(m){m[[IC]]})
+  I <- which.min(ICS)
+  BEST <- OLD[[I]]
+  NP <- num.pars(BEST,mean=TRUE)
+  NV <- num.pars(BEST,mean=FALSE)
+
+  # now see if correlations are supported
+  if(NV>1 && sum(!INF)>=NP)
+  {
+    GUESS <- BEST
+    MEANS <- BEST$INT
+    VARS <- diag(BEST$VARS)
+    S <- make.names(MEANS,VARS,OFF=TRUE)
+    if(S %nin% names(OLD))
+    {
+      if(trace) { message("Fitting covariance model ",S) }
+      OLD[[S]] <- meta.normal(MU,SIGMA,X=X,SX=SX,debias=debias,weights=weights,VARS=VARS,MEANS=MEANS,GUESS=GUESS,WARN=FALSE,...)
+    }
+  } # end correlation fit
+
+  ICS <- sapply(OLD,function(m){m[[IC]]})
+  names(ICS) <- names(OLD)
+  I <- sort(ICS,index.return=TRUE)$ix
+  ICS <- ICS[I]
+  ICS <- ICS - ICS[1]
+  I <- I[1]
 
   if(trace)
   {
     # report model selection
-    i <- sort(ICS,index.return=TRUE)$ix
-    ICS <- ICS[i] # sorted
-    ICS <- ICS - ICS[1] # start at zero
     ICS <- data.frame(ICS)
     colnames(ICS) <- paste0("\u0394",IC)
     message("* Model selection for autocovariance distribution.")
     print(ICS)
   }
 
+  R <- OLD[[I]]
+  MEANS <- R$INT
+  VARS <- diag(R$VARS)
+  R$name <- names(OLD)[I]
+  R$isotropic <- !("minor" %in% FEATURES && MEANS["minor"]) # just the mean
   R$axes <- axes
+
+  R$mu <- c(R$beta,R$mu)
   names(R)[ which(names(R)=="mu") ] <- "par" # population mean of features
   names(R)[ which(names(R)=="COV.mu") ] <- "COV" # uncertainty in population mean
   names(R)[ which(names(R)=="sigma") ] <- "POV" # population dispersion of features (under log)
@@ -576,6 +519,20 @@ mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
   # transform from diagonal-ish basis for covariance model
   if(any(VARS))
   {
+    JJ <- quad2lin(J)
+    dimnames(JJ) <- dimnames(R$COV.POV)
+    R$COV.POV <- JJ %*% R$COV.POV %*% t(JJ)
+
+    EXTRA <- length(formula)
+    if(EXTRA)
+    {
+      BASE <- diag(EXTRA+nrow(J))
+      dimnames(BASE) <- dimnames(R$COV)
+      SUB <- EXTRA+1:nrow(J)
+      BASE[SUB,SUB] <- J
+      J <- BASE
+    }
+
     J <- solve(J)
     tJ <- t(J)
     R$par <- (R$par %*% tJ)[1,]
@@ -583,36 +540,107 @@ mean.features <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
     R$POV <- J %*% R$POV %*% tJ
     # SUB <- FEATURES[variance]
     # J <- J[SUB,SUB]
-    J <- quad2lin(J)
-    dimnames(J) <- dimnames(R$COV.POV)
-    R$COV.POV <- J %*% R$COV.POV %*% t(J)
   }
 
-  # information for fitting that we no longer use
-  if(R$isotropic && "minor" %in% FEATURES)
+  # set beta structure (empty)
+  BETA <- BETA[BETA %in% FEATURES]
+
+  # fix names
+  NEW <- names(R$beta)
+  if(length(NEW))
   {
-    SUB <- FEATURES %nin% c('minor','angle')
-    VARS <- VARS[SUB]
+    # implement linear response
+    for(i in which(grepl('/',NEW,fixed=TRUE)))
+    {
+      Q <- strsplit(NEW[i],'/',fixed=TRUE)[[1]]
+      Q <- paste0(Q[1],":",Q[2])
+
+      names(R$beta)[i] <- Q
+      R$beta[i] <- R$beta[i] * 2
+      # this comes from integration:
+      # from beta(0) + beta'(0)*x          (slope meta-analysis)
+      #   to beta(0)*x + 1/2*beta'(0)*x^2  (RSF)
+
+      I <- which(names(R$par)==NEW[i])
+      names(R$par)[i] <- Q
+      R$par[i] <- R$par[i] * 2
+
+      I <- which(rownames(R$COV)==NEW[i])
+      rownames(R$COV)[I] <- colnames(R$COV)[I] <- Q
+      R$COV[I,] <- R$COV[,I] <- R$COV[I,] * 2
+
+      I <- rownames(R$POV)==NEW[i]
+      rownames(R$POV)[I] <- colnames(R$POV)[I] <- Q
+      R$POV[I,] <- R$POV[,I] <- R$POV[I,] * 2
+
+      for(I in which(grepl(NEW[i],rownames(R$COV.POV),fixed=TRUE)))
+      {
+        S <- strsplit(rownames(R$COV.POV)[I],"-",fixed=TRUE)[[1]]
+
+        if(S[1]==NEW[i])
+        { S[1] <- Q }
+
+        if(S[2]==NEW[i])
+        { S[2] <- Q }
+
+        S <- paste(S[1],"-",S[2])
+        rownames(R$COV.POV)[I] <- colnames(R$COV.POV)[I] <- S
+        R$COV.POV[I,] <-  R$COV.POV[,I] <- R$COV.POV[I,] * 4
+      }
+    } # end for NEW
+
+    NEW <- names(R$beta) # new slope of slopes
+
+    # add new population variances
+    R$POV <- mpad(R$POV,diff=length(NEW),side=-1,padname=NEW)
+    # add their uncertainties
+    ADD <- outer(NEW,NEW,function(a,b){paste0(a,'-',b)})
+    ADD <- ADD[ upper.tri(ADD,diag=TRUE) ] # unique terms
+    ADD <- c( ADD , outer(NEW,FEATURES,function(a,b){paste0(a,'-',b)}) )
+    R$COV.POV <- mpad(R$COV.POV,diff=length(ADD),side=-1,padname=ADD)
+
+    BETA <- c(NEW,BETA)
+    FEATURES <- c(NEW,FEATURES)
+
+    # resort
+    SORT <- outer(FEATURES,FEATURES,function(a,b){paste0(a,'-',b)})
+    SORT <- SORT[ upper.tri(SORT,diag=TRUE) ]
+    R$COV.POV <- R$COV.POV[SORT,SORT]
+  } # end if(length(BETA))
+
+  beta <- rep(0,length(BETA))
+  names(beta) <- BETA
+  R$beta <- beta
+
+  if(length(BETA))
+  { R$formula <- stats::as.formula(paste("~",paste(names(beta),collapse=" + "))) }
+
+  R$features <- FEATURES
+
+  # information for fitting that we no longer use
+  NEW <- rep(TRUE,length(NEW))
+  MEANS <- c(NEW,MEANS)
+  VARS <- c(NEW,VARS)
+  NIN <- !MEANS & !VARS
+  if(any(NIN))
+  {
+    SUB <- !NIN
+    NIN <- FEATURES[NIN]
     FEATURES <- FEATURES[SUB]
     R$par <- R$par[FEATURES]
+    VARS <- VARS[SUB]
     # R$par <- NULL
     R$COV <- R$COV[FEATURES,FEATURES]
     R$POV <- R$POV[FEATURES,FEATURES]
     # COV.POV should be okay except when missing POV
-    FEAT <- grepl('minor',rownames(R$COV.POV),fixed=TRUE) | grepl('angle',rownames(R$COV.POV),fixed=TRUE)
-    FEAT <- !FEAT
+    FEAT <- sapply(NIN,function(nin){grepl(nin,rownames(R$COV.POV),fixed=TRUE)})
+    FEAT <- !apply(FEAT,1,any)
     R$COV.POV <- R$COV.POV[FEAT,FEAT]
   }
-  R$features <- FEATURES
-
-  # set beta structure (empty)
-  beta <- array(0,length(BETA))
-  names(beta) <- BETA
-  if(length(BETA)) { R$beta <- beta }
 
   # reverse log transformation
   # R <- set.parameters(R,par,linear.cov=TRUE)
-  R <- exp.ctmm(R,debias=debias,variance=VARS)
+  R <- exp_ctmm(R,debias=debias,variance=VARS)
 
   return(R)
 }
@@ -651,14 +679,15 @@ mean.mu <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
   # no variance in mean location
   S <- "Dirac-\u03B4(\u03BC)"
   if(trace) { message("Fitting location-mean model ",S) }
-  MM[[S]] <- meta.normal(MU,SIGMA,VARS=FALSE,isotropic=TRUE,debias=debias,weights=weights,...)
+  MM[[S]] <- meta.normal(MU,SIGMA,VARS=FALSE,isotropic=TRUE,debias=debias,weights=weights,WARN=FALSE,...)
+  GUESS <- MM[[S]]
 
   # symmetric mean distribution
   if(2*N >= 2+1)
   {
     S <- "isotropic-\u03BC"
     if(trace) { message("Fitting location-mean model ",S) }
-    MM[[S]] <- meta.normal(MU,SIGMA,isotropic=TRUE,debias=debias,weights=weights,...)
+    MM[[S]] <- meta.normal(MU,SIGMA,isotropic=TRUE,debias=debias,weights=weights,GUESS=GUESS,WARN=FALSE,...)
     GUESS <- MM[[S]]
 
     # general distribution
@@ -666,7 +695,7 @@ mean.mu <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
     {
       S <- "anisotropic-\u03BC"
       if(trace) { message("Fitting location-mean model ",S) }
-      MM[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,GUESS=GUESS,...)
+      MM[[S]] <- meta.normal(MU,SIGMA,debias=debias,weights=weights,GUESS=GUESS,WARN=FALSE,...)
     }
   }
 
@@ -699,8 +728,10 @@ mean.mu <- function(x,debias=TRUE,weights=NULL,trace=FALSE,IC="AICc",...)
 
 
 ###########
-mean.ctmm <- function(x,weights=NULL,sample=TRUE,debias=TRUE,IC="AICc",trace=TRUE,...)
+mean.ctmm <- function(x,formula=FALSE,weights=NULL,sample=TRUE,debias=TRUE,IC="AIC",trace=TRUE,...)
 {
+  select <- "all"
+
   # if(length(x)==1)
   # {
   #   warning("Only one individual in list.")
@@ -708,7 +739,7 @@ mean.ctmm <- function(x,weights=NULL,sample=TRUE,debias=TRUE,IC="AICc",trace=TRU
   # }
 
   n <- length(x)
-  info <- mean.info(x)
+  info <- mean_info(x)
   axes <- x[[1]]$axes
 
   if(is.null(weights))
@@ -727,7 +758,7 @@ mean.ctmm <- function(x,weights=NULL,sample=TRUE,debias=TRUE,IC="AICc",trace=TRU
     MM <- mean.mu(x,debias=debias,weights=weights,IC=IC,trace=trace,...)
     isotropic['mu'] <- MM$isotropic
 
-    FM <- mean.features(x,debias=debias,weights=weights,IC=IC,trace=trace,...)
+    FM <- mean.features(x,debias=debias,weights=weights,select=select,IC=IC,trace=trace,formula=formula,...)
     isotropic['sigma'] <- FM$isotropic
 
     x <- copy(from=FM,to=MM)
@@ -808,7 +839,7 @@ mean.ctmm <- function(x,weights=NULL,sample=TRUE,debias=TRUE,IC="AICc",trace=TRU
 
 
 ## population stationary distribution
-mean.pop <- function(CTMM)
+mean_pop <- function(CTMM)
 {
   # spread (x,y)
   sigma <- CTMM$POV.mu + CTMM$sigma
@@ -829,7 +860,7 @@ mean.pop <- function(CTMM)
   else
   {
     P <- c('major','minor','angle')
-    J <- J.sigma.par(CTMM$sigma@par)
+    J <- J.sigma.par(CTMM$sigma)
     COV <- COV + J%*%(CTMM$COV[P,P]+CTMM$POV[P,P])%*%t(J)
   }
 
@@ -844,7 +875,7 @@ mean.pop <- function(CTMM)
   else
   {
     P <- c('major','minor','angle')
-    J <- J.par.sigma(sigma[c(1,4,2)])
+    J <- J.par.sigma(sigma)
     COV <- J %*% COV %*% t(J)
   }
   dimnames(COV) <- list(P,P)

@@ -1,23 +1,57 @@
-ctmm 1.1.1 (2023-03-09)
+ctmm 1.2.1 (2023-11-19)
 ================
-* new function rsf.select()
+* periodic mean functions now estimate frequency
+* periodic mean summary now uses beta CIs
+* new mean.ctmm() argument formula for functional response estimation
+* new grid argument dr.fn in akde(), occurrence(), pkde()
+* as.telemetry() now imports ATLAS error ellipses
+* new ctmm.boot() argument clamp
+* mean() of occurrence() now time weighted by default
+* new plot method: plot.ctmm()
+* plot() argument 'col.DF' renamed to 'col.UD'
+* improvements DOF[area] calculations in mean() and pkde()
+* improvement to optimizer() when initial guess is on a boundary and hessian is bad
+* bugfix in rsf.select with functions in formulas
+* bugfix in raster factor expansion with more than one raster factor
+* bugfix in mean.ctmm() potential endless loop
+* bugfix in normal meta-analysis REML correction
+
+ctmm 1.2.0 (2023-09-22)
+================
+* new function names: cde() and encounter() replacing encounter() and rates()
+* new functions rsf.select(), intensity()
+* new functions sdm.fit(), sdm.select()
+* new function writeVector(), depreciating function writeShapefile()
 * new function funnel() for funnel plots
+* new function midpoint()
 * new population covariance models and improved model selection in mean.ctmm()
 * new argument 'sqrt' in distance()
 * new argument 'dt.hot' in as.telemetry()
 * new argument 'variable' in Log()
+* new argument 'compute' in ctmm.loglike()
+* new argument 't' in proximity()
+* as.telemetry() now supports GBIF format data
 * as.telemetry() datum argument now works on UTM import, and is no longer to a be a complete PROJ string
+* as.telemetry() timeformat='auto' now default
 * as.telemetry(), plot.telemetry(), rsf.fit() updated from sp to sf transforms
 * distance() can now take location arguments
-* extrapolation disabled in suitability()
+* plot.telemetry() col.DF & col.level arguments can now be color() lists
+* suitability() now produces a raster stack corresponding to the CIs
+* suitability() on population RSFs now outputs the population suitability
+* suitability() extrapolation disabled
+* bugfix in tbind for conflicting location classes
 * bugfix in suitability()
 * bugfix in distance() method="Euclidean", debias=TRUE
 * bugfix in rates() debias=TRUE
-* convergence issue fixed in mean.ctmm()
-* overlap() and meta() can now extract object names
-* meta() stability improvements for tiny denominator DOF estimates
+* bugfix in summary() of population mean location DOF
+* bugfix in distances() for 0/0
+* bugfix in UD polygon export for tiny areas
 * as.telemetry() UTM import updated to new PROJ specification
-* mean.ctmm() numerical stability improvements and covariance selection
+* mean.ctmm() improved convergence, numerical stability, and covariance selection
+* meta() stability improvements for tiny DOF estimates, and OUf support
+* overlap() and meta() can now extract object names
+* pkde(...) -> akde(...) -> bandwidth(...) -> mean(...) arguments now passed
+* rsf.fit() AICc formula improved
 
 ctmm 1.1.0 (2022-11-03)
 ================

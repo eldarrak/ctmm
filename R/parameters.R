@@ -6,11 +6,32 @@ POSITIVE.PARAMETERS <- c("major","minor","tau position","tau velocity","tau","om
 # if linear==TRUE, only return linear non-problematic parameters
 # if linear.cov==TRUE, use linear covariance parameters for pREML
 # STRUCT determines the model structure incase some estimated parameters in CTMM are zero
-id.parameters <- function(CTMM,profile=TRUE,linear=FALSE,linear.cov=FALSE,UERE.FIT=NA,dt=0,df=0,dz=0,STRUCT=CTMM)
+id.parameters <- function(CTMM,profile=TRUE,linear=FALSE,linear.cov=FALSE,UERE.FIT=NA,dt=0,df=0,dz=0,STRUCT=CTMM,fit=FALSE)
 {
   AXES <- length(CTMM$axes)
   # identify and name autocovariance parameters
   NAMES <- NULL
+
+  states <- get.states(CTMM)
+  if(length(states))
+  {
+    R <- list()
+    for(s in states)
+    { R[[s]] <- id.parameters(CTMM[[s]],profile=profile,linear=linear,linear.cov=linear.cov,UERE.FIT=UERE.FIT,dt=dt,dz=dz,STRUCT=STRUCT) }
+
+    NAMES <- list()
+    parscale <- lower <- upper <- period <- NULL
+    for(s in states)
+    {
+      NAMES[[s]] <- R[[s]]$NAMES
+      parscale <- c(parscale,R[[s]]$parscale)
+      lower <- c(lower,R[[s]]$lower)
+      upper <- c(upper,R[[s]]$upper)
+      period <- c(period,R[[s]]$period)
+    }
+
+    return(list(NAMES=NAMES,parscale=parscale,lower=lower,upper=upper,period=period))
+  }
 
   if(STRUCT$sigma@par['major'] || length(STRUCT$tau))
   {
@@ -23,8 +44,11 @@ id.parameters <- function(CTMM,profile=TRUE,linear=FALSE,linear.cov=FALSE,UERE.F
 
   if(any(UERE.FIT)) { NAMES <- c(NAMES, paste("error",names(UERE.FIT)[UERE.FIT>0]) ) }
 
-  if(!linear) # nonlinear autocorrelation parameters
+  if(!linear) # nonlinear mean and autocovariance parameters
   {
+    DRIFT <- drift.pars(CTMM,all=TRUE,fit=fit)
+    if(length(DRIFT$pars)) { NAMES <- c(NAMES,DRIFT$NAMES) }
+
     TIMELINK <- length(CTMM$timelink.par)
     if(TIMELINK) { NAMES <- c(NAMES,paste0("timelink-",1:TIMELINK)) }
 
@@ -116,6 +140,14 @@ id.parameters <- function(CTMM,profile=TRUE,linear=FALSE,linear.cov=FALSE,UERE.F
 
   if(!linear) # nonlinear autocorrelation parameters
   {
+    if(length(DRIFT$pars))
+    {
+      parscale <- c(parscale,DRIFT$parscale)
+      lower <- c(lower,DRIFT$lower)
+      upper <- c(upper,DRIFT$upper)
+      period <- c(period,rep(FALSE,length(DRIFT$pars)))
+    }
+
     if(TIMELINK)
     {
       TLI <- timelink.parinfo(CTMM)
@@ -191,6 +223,14 @@ get.parameters <- function(CTMM,NAMES,profile=FALSE,linear.cov=FALSE)
 {
   par <- numeric(length(NAMES))
   names(par) <- NAMES
+  states <- get.states(CTMM)
+  if(length(states))
+  {
+    par <- list()
+    for(s in states) { par[[s]] <- get.parameters(CTMM[[s]],NAMES[[s]],profile=profile,linear.cov=linear.cov) }
+    names(par) <- states
+    return(par)
+  }
 
   # can't loop this easily because R collapses NULL values
   getter <- function(NAME,VALUE=CTMM[[NAME]])
@@ -218,6 +258,14 @@ get.parameters <- function(CTMM,NAMES,profile=FALSE,linear.cov=FALSE)
 
     PARS <- NAMES[ grepl("error",NAMES) ]
     for(P in PARS) { par[P] <- CTMM$error[ substr(P,nchar("error ?"),nchar(P)) ]^2 }
+  }
+
+  DRIFT <- drift.pars(CTMM)
+  if(length(DRIFT))
+  {
+    DPARS <- names(DRIFT)
+    DPARS <- DPARS[ DPARS %in% NAMES ]
+    par[DPARS] <- DRIFT[DPARS]
   }
 
   timelink <- CTMM$timelink.par
@@ -275,6 +323,13 @@ profiled.var <- function(CTMM,sigma=CTMM$sigma,UERE.RMS=CTMM$error,DT=1,AVE=FALS
 # clean up parameter arrays
 clean.parameters <- function(par,profile=FALSE,linear.cov=FALSE,timelink="identity")
 {
+  # multiple states
+  if(class(par)[1]=='list')
+  {
+    par <- lapply(par,function(p){clean.parameters(p,profile=profile,linear.cov=linear.cov,timelink=timelink)})
+    return(par)
+  }
+
   NAMES <- names(par)
 
   for(P in POSITIVE.PARAMETERS) { if(P %in% NAMES) { par[P] <- clamp(par[P],0,Inf) } }
@@ -388,6 +443,15 @@ set.parameters <- function(CTMM,par,profile=FALSE,linear.cov=FALSE)
   }
   CTMM$sigma <- covm(sigma,axes=CTMM$axes)
 
+  DRIFT <- drift.pars(CTMM)
+  if(length(DRIFT))
+  {
+    DPARS <- names(DRIFT)
+    DPARS <- DPARS[ DPARS %in% NAMES ]
+    DRIFT[DPARS] <- par[DPARS]
+    CTMM <- drift.assign(CTMM,DRIFT)
+  }
+
   timelink <- par[grepl("timelink",NAMES)]
   if(length(timelink)) { CTMM$timelink.par <- timelink }
 
@@ -439,6 +503,16 @@ copy.parameters <- function(x,value,par=value$features,destructive=TRUE)
     x$error[P] <- value$error[P]
   }
 
+  DRIFT <- drift.pars(value)
+  if(length(DRIFT))
+  {
+    DRIFTO <- drift.pars(x)
+    DPARS <- names(DRIFT)
+    DPARS <- DPARS[ DPARS %in% names(DRIFTO) ]
+    DRIFTO[DPARS] <- DRIFT[DPARS]
+    x <- drift.assign(x,DRIFTO)
+  }
+
   # don't think I need this
   if("MLE" %in% names(x))
   {
@@ -447,4 +521,16 @@ copy.parameters <- function(x,value,par=value$features,destructive=TRUE)
   }
 
   return(x)
+}
+
+
+get.states <- function(CTMM)
+{
+  dynamics <- CTMM$dynamics
+  if(is.null(dynamics) || dynamics=="stationary")
+  { states <- NULL }
+  else if(dynamics=="change.point")
+  { states <- levels(CTMM[[dynamics]]$state) }
+
+  return(states)
 }

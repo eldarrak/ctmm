@@ -1,10 +1,11 @@
 pandoc: '2.5'
-pkgdown: 2.0.6
+pkgdown: 2.0.7
 pkgdown_sha: ~
 articles:
   akde: akde.html
   error: error.html
+  interactions: interactions.html
   periodogram: periodogram.html
   variogram: variogram.html
-last_built: 2022-11-04T00:41Z
+last_built: 2023-09-19T18:43Z
 

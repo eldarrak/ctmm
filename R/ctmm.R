@@ -66,15 +66,21 @@ ctmm <- function(tau=NULL,omega=FALSE,isotropic=FALSE,range=TRUE,circle=FALSE,er
     colnames(List$mu) <- axes
   }
 
-  # default time-link
+  # default (output) axes link
+  if(is.null(List$link)) { List$link <- "identity" }
+
+  # default (input) time-link
   if(is.null(List$timelink)) { List$timelink <- "identity" }
+
+  # default dynamics model
+  if(is.null(List$dynamics)) { List$dynamics <- "stationary" }
 
   # FIX THIS
   #if(!is.null(List$COV.mu)) { dimnames(List$COV.mu) <- list(axes,axes) }
 
   # supply default parameters / check sanity / label dimensions
-  # drift <- get(List$mean)
-  # List <- drift@clean(List)
+  #
+  #
 
   result <- new.ctmm(List,info=info)
 
@@ -92,9 +98,26 @@ ctmm.ctmm <- function(CTMM)
 }
 
 
+# dynamical states
+get.states <- function(CTMM)
+{
+  S <- CTMM$dynamics
+  if(length(S))
+  {
+    S <- CTMM[[S]]
+    S <- names(S)
+    S <- unique(S)
+  }
+  return(S)
+}
+
+
 # compute all tau/omega related quantities that we need
 get.taus <- function(CTMM,zeroes=FALSE,simplify=FALSE)
 {
+  STATES <- get.states(CTMM)
+  for(S in STATES) { CTMM[[S]] <- get.taus(CTMM,zeroes=zeroes,simplify=simplify) }
+
   CTMM$tau <- sort(CTMM$tau,decreasing=TRUE)
   if(simplify) { CTMM$tau <- CTMM$tau[CTMM$tau>0] }
   K <- if(zeroes) { length(CTMM$tau) } else { continuity(CTMM) }
@@ -204,7 +227,7 @@ get.taus <- function(CTMM,zeroes=FALSE,simplify=FALSE)
 
 
 # returns the canonical parameters of a tau vector
-pars.tauv <- function(tau,tauc=tau)
+pars_tauv <- function(tau,tauc=tau)
 {
   if(length(tauc)==0)
   { return(NULL) }
@@ -218,7 +241,7 @@ pars.tauv <- function(tau,tauc=tau)
 
 
 ###########################
-ctmm.prepare <- function(data,CTMM,precompute=TRUE,tau=TRUE,DIM=length(CTMM$axes),calibrate=FALSE,...)
+ctmm.prepare <- function(data,CTMM,precompute=TRUE,tau=TRUE,DIM=length(CTMM$axes),calibrate=FALSE,verbose=TRUE,...)
 {
   axes <- CTMM$axes
 
@@ -240,8 +263,17 @@ ctmm.prepare <- function(data,CTMM,precompute=TRUE,tau=TRUE,DIM=length(CTMM$axes
 
   # error parameters
   TYPE <- DOP.match(axes)
-  UERE <- attr(data,"UERE")$UERE[,TYPE]
-  names(UERE) <- rownames(attr(data,"UERE")$UERE)
+  if(TYPE!="unknown")
+  {
+    UERE <- attr(data,"UERE")$UERE[,TYPE]
+    names(UERE) <- rownames(attr(data,"UERE")$UERE)
+  }
+  else
+  {
+    UERE <- 0
+    names(UERE) <- "all"
+  }
+
   if(is.null(names(CTMM$error))) # fix manually specified error parameters
   {
     if(identical(CTMM$error,TRUE)) # lazy set fix
@@ -252,13 +284,10 @@ ctmm.prepare <- function(data,CTMM,precompute=TRUE,tau=TRUE,DIM=length(CTMM$axes
   } # otherwise leave this alone, as could be a proper subset of data$class levels
   if(any(CTMM$error>0)) { CTMM$errors <- TRUE }
 
-  # evaluate mean function for this data set if no vector is provided
-  if(precompute && (is.null(CTMM$mean.vec) || is.null(CTMM$error.mat) || is.null(CTMM$class.mat)))
+  # evaluate mean function for this data set if no vector is provided or vector can change
+  if(precompute && (is.null(CTMM$mean.vec) || length(drift.pars(CTMM))))
   {
-    CTMM$class.mat <- get.class.mat(data)
-
-    drift <- get(CTMM$mean)
-    U <- drift(data$t,CTMM)
+    U <- drift.mean(CTMM,data$t,verbose=verbose)
     CTMM$mean.vec <- U
 
     range <- CTMM$range
@@ -273,8 +302,14 @@ ctmm.prepare <- function(data,CTMM,precompute=TRUE,tau=TRUE,DIM=length(CTMM$axes
       UU <- t(U) %*% U
       if(!range) { UU[1,1] <- 0 } # zero stationary contribution (remove below)
       CTMM$UU <- UU
-      CTMM$REML.loglike <- AXES/2*log(det(UU[-1,-1])) # extra term for REML likelihood
+      CTMM$REML.loglike <- AXES/2*PDlogdet(UU[-1,-1]) # extra term for REML likelihood
     }
+  }
+
+  # evaluate error stuff
+  if(precompute && (is.null(CTMM$error.mat) || is.null(CTMM$class.mat)))
+  {
+    CTMM$class.mat <- get.class.mat(data)
 
     # construct error matrix, if UERE is unknown construct error matrix @ RMS UERE=1 for relative variances
     # ERROR <- CTMM

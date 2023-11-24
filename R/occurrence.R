@@ -22,22 +22,23 @@ occurrence <- function(data,CTMM,R=list(),SP=NULL,SP.in=TRUE,H=0,variable="utili
 
   axes <- CTMM[[1]]$axes
 
-  grid <- format.grid(grid,axes=axes)
+  grid <- format_grid(grid,axes=axes)
   COL <- length(axes)
 
   KDE <- list()
   for(i in 1:n)
   { KDE[[i]] <- currence(data[[i]],CTMM[[i]],H=H,variable=variable,res.time=res.time,res.space=res.space,grid=grid,cor.min=cor.min,dt.max=dt.max,buffer=buffer,...) }
+  W <- sapply(KDE,function(k){sum(k$W)})
 
   # determine desired (absolute) resolution
   dr <- sapply(1:n,function(i){KDE[[i]]$dr})
   dim(dr) <- c(COL,n)
-  dr <- apply(dr,1,min)
+  dr <- apply(dr,1,grid$dr.fn)
 
   if(COMPATIBLE) # force grids compatible
   {
     grid$align.to.origin <- TRUE
-    if(is.null(grid$dr)) { grid$dr <- dr }
+    if("dr" %nin% names(grid)) { grid$dr <- dr }
   }
 
   # finish distribution calculation
@@ -47,6 +48,7 @@ occurrence <- function(data,CTMM,R=list(),SP=NULL,SP.in=TRUE,H=0,variable="utili
     KDE[[i]]  <- kde(KDE[[i]]$data,CTMM=CTMM[[i]],H=KDE[[i]]$H,W=KDE[[i]]$W,dr=dr,grid=grid,SP=SP,SP.in=SP.in,RASTER=R)
     KDE[[i]]$H <- diag(0,2)
     dimnames(KDE[[i]]$H) <- list(axes,axes)
+    KDE[[i]]$W <- W[i]
     KDE[[i]] <- new.UD(KDE[[i]],info=attr(data[[i]],"info"),type='occurrence',CTMM=CTMM[[i]])
   }
   names(KDE) <- names(data)
@@ -89,8 +91,7 @@ currence <- function(data,CTMM,H=0,variable="utilization",res.time=10,res.space=
   data <- data$data
 
   # calculate trend
-  drift <- get(CTMM0$mean)
-  drift <- drift(data$t,CTMM0) %*% CTMM0$mu
+  drift <- drift.mean(CTMM0,data$t) %*% CTMM0$mu
 
   # detrend for smoothing - retrend later
   z <- get.telemetry(data,axes=axes)
@@ -136,7 +137,7 @@ currence <- function(data,CTMM,H=0,variable="utilization",res.time=10,res.space=
     data$COV.vx.vx <- state$VCOV[GRID,'vx','vx']
     data$COV.vx.vy <- state$VCOV[GRID,'vx','vy']
     data$COV.vy.vy <- state$VCOV[GRID,'vy','vy']
-    w.grid <- w.grid * speeds.fast(data,append=TRUE)$speed
+    w.grid <- w.grid * speeds_fast(data,append=TRUE)$speed
   }
 
   # some covariances are slightly negative due to roundoff error

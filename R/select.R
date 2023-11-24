@@ -164,7 +164,21 @@ get.mle <- function(FIT)
 ###############
 # keep removing uncertain parameters until AIC stops improving
 ctmm.select <- function(data,CTMM,verbose=FALSE,level=1,IC="AICc",MSPE="position",trace=FALSE,cores=1,...)
-{ ctmm.iterate(data,CTMM,verbose=verbose,level=level,IC=IC,MSPE=MSPE,trace=trace,cores=cores,recurse=FALSE,TRYS=NULL,...) }
+{
+  M <- ctmm.iterate(data,CTMM,verbose=TRUE,level=level,IC=IC,MSPE=MSPE,trace=trace,cores=cores,recurse=FALSE,TRYS=NULL,...)
+
+  for(i in 1:length(M))
+  {
+    if(grepl('anisotropic',names(M)[i]))
+    {
+      ISO <- gsub(" anisotropic","",names(M)[i],fixed=TRUE)
+      if(ISO %in% names(M)) { M[[i]]$ISO <- M[[ISO]] }
+    }
+  }
+
+  if(verbose) { return(M) }
+  else { return(M[[1]]) }
+}
 
 ## internal function being called recursively by ctmm.select
 # recurse: FALSE is outer-most call, TRUE are inner calls
@@ -234,7 +248,6 @@ ctmm.iterate <- function(data,CTMM,verbose=FALSE,level=1,IC="AICc",MSPE="positio
     for(i in 1:AXES) { if(CTMM$sigma@par[i]>.Machine$double.eps) { VAR[i] <<- CTMM$sigma@par[i] } }
   }
 
-  drift <- get(CTMM$mean)
   if(CTMM$mean=="periodic")
   {
     Nyquist <- CTMM$period/stats::median(diff(data$t))/2
@@ -257,7 +270,7 @@ ctmm.iterate <- function(data,CTMM,verbose=FALSE,level=1,IC="AICc",MSPE="positio
     REFINE <- REFINE[!(names(REFINE) %in% TRYS)]
 
     # copy over best initial parameter guess for refined drops
-    if(!drift@is.stationary(CTMM) && length(DROP))
+    if(!drift.is.stationary(CTMM) && length(DROP))
     {
       for(i in 1:length(DROP))
       {
@@ -562,7 +575,8 @@ name.ctmm <- function(CTMM,whole=TRUE)
   { if(tau[1]<Inf) { NAME <- "OU" } else { NAME <- "BM" } }
   else if(length(tau)==0)
   {
-    if(CTMM$sigma@par['major'] || "major" %in% FEATURES)
+    POS <- "sigma" %in% names(CTMM) && CTMM$sigma@par['major']<=0
+    if(POS || "major" %in% FEATURES || "sigma" %nin% names(CTMM))
     { NAME <- "IID" }
     else
     { NAME <- "inactive" }
@@ -570,7 +584,7 @@ name.ctmm <- function(CTMM,whole=TRUE)
 
   # isotropy
   isotropic <- CTMM$isotropic
-  if(length(CTMM$axes)>1)
+  if(length(CTMM$axes)>1 && !is.null(isotropic))
   {
     if(all(!isotropic))
     { NAME <- c(NAME,"anisotropic") }
@@ -602,8 +616,7 @@ name.ctmm <- function(CTMM,whole=TRUE)
   if(link$name!="identity") { NAME <- c(NAME,paste0(link$name,"-link")) }
 
   # mean
-  drift <- get(CTMM$mean)
-  DNAME <- drift@name(CTMM)
+  DNAME <- drift.name(CTMM)
 
   NAME <- paste(NAME,sep="",collapse=" ")
 

@@ -413,7 +413,7 @@ mc.optim <- function(par,fn,...,lower=-Inf,upper=Inf,period=FALSE,reset=identity
   if(!is.null(covariance))
   {
     covariance <- t(t(covariance/parscale)/parscale)
-    TEST <- eigen(covariance,only.values=TRUE)$values
+    TEST <- eigen(covariance)$values
     TEST <- any(TEST<=TOL[1]) || any(TEST>=1/TOL[1]) || min(TEST)/max(TEST)<=TOL[1]
     if(TEST) { covariance <- NULL }
   }
@@ -421,7 +421,7 @@ mc.optim <- function(par,fn,...,lower=-Inf,upper=Inf,period=FALSE,reset=identity
   if(!is.null(hessian))
   {
     hessian <- t(t(hessian*parscale)*parscale)
-    TEST <- 1/eigen(hessian,only.values=TRUE)$values
+    TEST <- 1/eigen(hessian)$values
     TEST <- any(TEST<=TOL[1]) || any(TEST>=1/TOL[1]) || min(TEST)/max(TEST)<=TOL[1]
     if(TEST) { hessian <- NULL }
   }
@@ -971,6 +971,13 @@ mc.optim <- function(par,fn,...,lower=-Inf,upper=Inf,period=FALSE,reset=identity
       fn.par <- fn.all[MIN]
 
       END <- (MIN==1 || MIN==length(fn.all))
+      if(END) # did we cross zero without any resolution
+      {
+        TEST <- apply(par.all,1,function(r){abs(diff(sign(r)))})
+        TEST <- apply(TEST,1,sum)
+        if((MIN==1 && TEST[1]) || (MIN==length(fn.all) && TEST[length(fn.all)-1]))
+        { END <- FALSE } # resolve this case better
+      }
 
       if(trace==2) { message(sprintf("%s %s search",format(zero+fn.par,digits=16),LINE.TYPE)) }
       if(trace==3) { message("\tc(",paste0(NAMES,"=",par,collapse=', '),")") }
